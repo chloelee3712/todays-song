@@ -17,16 +17,16 @@
 
 import re
 import urllib.parse
-import sqlite3
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
+import psycopg2
+import psycopg2.extras
 import requests
 from bs4 import BeautifulSoup
 import streamlit as st
 import plotly.express as px
 
-DB_PATH = "songs.db"
 KST = timezone(timedelta(hours=9))   # Streamlit Cloud는 UTC라 한국 날짜로 고정
 
 # (내부키, 이모지, 표시이름)
@@ -42,29 +42,31 @@ def now_kst():
 
 
 # ======================================================================
-# DB 계층
+# DB 계층 (PostgreSQL / Supabase)
 # ======================================================================
 def get_conn():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
+    url = st.secrets["DATABASE_URL"]
+    conn = psycopg2.connect(url, cursor_factory=psycopg2.extras.RealDictCursor)
     return conn
 
 
 def init_db():
     conn = get_conn()
-    conn.execute("""CREATE TABLE IF NOT EXISTS songs(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cur = conn.cursor()
+    cur.execute("""CREATE TABLE IF NOT EXISTS songs(
+        id SERIAL PRIMARY KEY,
         nickname TEXT, title TEXT, artist TEXT,
         reason TEXT, link TEXT, genre TEXT,
         album TEXT, year TEXT, created_at TEXT)""")
-    conn.execute("""CREATE TABLE IF NOT EXISTS reactions(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cur.execute("""CREATE TABLE IF NOT EXISTS reactions(
+        id SERIAL PRIMARY KEY,
         song_id INTEGER, nickname TEXT, kind TEXT,
         UNIQUE(song_id, nickname, kind))""")
-    conn.execute("""CREATE TABLE IF NOT EXISTS comments(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cur.execute("""CREATE TABLE IF NOT EXISTS comments(
+        id SERIAL PRIMARY KEY,
         song_id INTEGER, nickname TEXT, body TEXT, created_at TEXT)""")
     conn.commit()
+    cur.close()
     conn.close()
 
 
@@ -72,26 +74,34 @@ def user_posted_within_24h(nickname):
     """24시간 1곡 제한 체크."""
     cutoff = (now_kst() - timedelta(hours=24)).isoformat()
     conn = get_conn()
-    n = conn.execute("SELECT COUNT(*) AS n FROM songs WHERE nickname=? AND created_at > ?",
-                     (nickname, cutoff)).fetchone()["n"]
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) AS n FROM songs WHERE nickname=%s AND created_at > %s",
+                (nickname, cutoff))
+    n = cur.fetchone()["n"]
+    cur.close()
     conn.close()
     return n > 0
 
 
 def add_song(nickname, title, artist, reason, link, genre, album=None, year=None):
     conn = get_conn()
-    conn.execute("""INSERT INTO songs(nickname,title,artist,reason,link,genre,album,year,created_at)
-                    VALUES(?,?,?,?,?,?,?,?,?)""",
-                 (nickname, title, artist, reason, link, genre, album, year, now_kst().isoformat()))
+    cur = conn.cursor()
+    cur.execute("""INSERT INTO songs(nickname,title,artist,reason,link,genre,album,year,created_at)
+                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (nickname, title, artist, reason, link, genre, album, year, now_kst().isoformat()))
     conn.commit()
+    cur.close()
     conn.close()
 
 
 def get_songs_on(date_str):
     """date_str='YYYY-MM-DD' (KST 기준) 의 추천곡을 최신순으로."""
     conn = get_conn()
-    rows = conn.execute("""SELECT * FROM songs WHERE substr(created_at,1,10)=?
-                           ORDER BY created_at DESC""", (date_str,)).fetchall()
+    cur = conn.cursor()
+    cur.execute("""SELECT * FROM songs WHERE substr(created_at,1,10)=%s
+                   ORDER BY created_at DESC""", (date_str,))
+    rows = cur.fetchall()
+    cur.close()
     conn.close()
     return rows
 
@@ -99,45 +109,58 @@ def get_songs_on(date_str):
 def toggle_reaction(song_id, nickname, kind):
     """이미 누른 반응이면 취소, 아니면 추가 (사용자당 반응종류별 1개)."""
     conn = get_conn()
-    row = conn.execute("SELECT id FROM reactions WHERE song_id=? AND nickname=? AND kind=?",
-                       (song_id, nickname, kind)).fetchone()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM reactions WHERE song_id=%s AND nickname=%s AND kind=%s",
+                (song_id, nickname, kind))
+    row = cur.fetchone()
     if row:
-        conn.execute("DELETE FROM reactions WHERE id=?", (row["id"],))
+        cur.execute("DELETE FROM reactions WHERE id=%s", (row["id"],))
     else:
-        conn.execute("INSERT INTO reactions(song_id,nickname,kind) VALUES(?,?,?)",
-                     (song_id, nickname, kind))
+        cur.execute("INSERT INTO reactions(song_id,nickname,kind) VALUES(%s,%s,%s)",
+                    (song_id, nickname, kind))
     conn.commit()
+    cur.close()
     conn.close()
 
 
 def reaction_counts(song_id):
     conn = get_conn()
-    rows = conn.execute("""SELECT kind, COUNT(*) AS n FROM reactions
-                           WHERE song_id=? GROUP BY kind""", (song_id,)).fetchall()
+    cur = conn.cursor()
+    cur.execute("""SELECT kind, COUNT(*) AS n FROM reactions
+                   WHERE song_id=%s GROUP BY kind""", (song_id,))
+    rows = cur.fetchall()
+    cur.close()
     conn.close()
     return {r["kind"]: r["n"] for r in rows}
 
 
 def user_reacted(song_id, nickname):
     conn = get_conn()
-    rows = conn.execute("SELECT kind FROM reactions WHERE song_id=? AND nickname=?",
-                        (song_id, nickname)).fetchall()
+    cur = conn.cursor()
+    cur.execute("SELECT kind FROM reactions WHERE song_id=%s AND nickname=%s",
+                (song_id, nickname))
+    rows = cur.fetchall()
+    cur.close()
     conn.close()
     return {r["kind"] for r in rows}
 
 
 def add_comment(song_id, nickname, body):
     conn = get_conn()
-    conn.execute("INSERT INTO comments(song_id,nickname,body,created_at) VALUES(?,?,?,?)",
-                 (song_id, nickname, body, now_kst().isoformat()))
+    cur = conn.cursor()
+    cur.execute("INSERT INTO comments(song_id,nickname,body,created_at) VALUES(%s,%s,%s,%s)",
+                (song_id, nickname, body, now_kst().isoformat()))
     conn.commit()
+    cur.close()
     conn.close()
 
 
 def get_comments(song_id):
     conn = get_conn()
-    rows = conn.execute("SELECT * FROM comments WHERE song_id=? ORDER BY created_at ASC",
-                        (song_id,)).fetchall()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM comments WHERE song_id=%s ORDER BY created_at ASC", (song_id,))
+    rows = cur.fetchall()
+    cur.close()
     conn.close()
     return rows
 
@@ -395,8 +418,12 @@ def archive_view():
 def stats_view():
     st.markdown("## 📊 통계 & 장르 분석")
     conn = get_conn()
-    songs = conn.execute("SELECT * FROM songs").fetchall()
-    total_reactions = conn.execute("SELECT COUNT(*) AS n FROM reactions").fetchone()["n"]
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM songs")
+    songs = cur.fetchall()
+    cur.execute("SELECT COUNT(*) AS n FROM reactions")
+    total_reactions = cur.fetchone()["n"]
+    cur.close()
     conn.close()
 
     if not songs:

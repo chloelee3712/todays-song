@@ -8,6 +8,9 @@ venv/
 # 앱 DB (로컬 생성물, 커밋하지 않음)
 songs.db
 
+# Streamlit secrets (비밀번호 포함, 절대 커밋하지 않음)
+.streamlit/secrets.toml
+
 # OS / IDE
 .DS_Store
 .idea/
