@@ -171,24 +171,49 @@ def get_comments(song_id):
 # 메타데이터 수집 (Last.fm 트랙 페이지를 BeautifulSoup으로 파싱)
 # 같은 곡은 캐시해서 재요청 안 함 (= 정제/효율)
 # ======================================================================
-def _normalize(s):
-    """공백 제거·소문자 변환 후 URL 인코딩 — 대소문자·공백 차이를 흡수."""
-    return urllib.parse.quote_plus(re.sub(r"\s+", " ", s.strip()).lower())
+def _enc(s):
+    """공백 정리 후 URL 인코딩 (대소문자는 그대로 유지)."""
+    return urllib.parse.quote(re.sub(r"\s+", " ", s.strip()), safe="-")
+
+
+def _casing_variants(s):
+    """입력 문자열의 대소문자 변형 4가지를 우선순위 순으로 반환."""
+    s = re.sub(r"\s+", " ", s.strip())
+    return [
+        s,                          # 1) 원본 그대로
+        s.title(),                  # 2) 단어별 첫 글자 대문자 (Blink-182, I Miss You)
+        s.lower(),                  # 3) 전체 소문자
+        s.upper(),                  # 4) 전체 대문자
+    ]
+
+
+def _try_lastfm_url(artist, title):
+    """대소문자 조합을 순서대로 시도해 200 응답을 받은 첫 번째 (url, soup)를 반환."""
+    headers = {"User-Agent": "OnoChoo/1.0"}
+    for a_var in _casing_variants(artist):
+        for t_var in _casing_variants(title):
+            url = f"https://www.last.fm/music/{_enc(a_var)}/_/{_enc(t_var)}"
+            try:
+                r = requests.get(url, headers=headers, timeout=8)
+                if r.status_code == 200:
+                    soup = BeautifulSoup(r.text, "html.parser")
+                    # 실제 트랙 페이지인지 확인 (태그나 헤더 존재 여부)
+                    if soup.select_one('a[href^="/tag/"]') or soup.select_one("h1"):
+                        return url, soup
+            except Exception:
+                continue
+    return None, None
 
 
 @st.cache_data(show_spinner=False, ttl=60 * 60 * 24)
 def fetch_lastfm_meta(artist, title):
-    """Last.fm 트랙 페이지에서 장르·앨범·청취자 수·재생 수를 스크래핑.
-    반환: dict(genre, album, listeners, playcount) — 못 찾은 항목은 None.
+    """Last.fm 트랙 페이지에서 장르·앨범·연도·청취자 수·재생 수를 스크래핑.
+    대소문자/공백 차이를 자동으로 흡수. 반환: dict — 못 찾은 항목은 None.
     """
     try:
-        a = _normalize(artist)
-        t = _normalize(title)
-        url = f"https://www.last.fm/music/{a}/_/{t}"
-        r = requests.get(url, headers={"User-Agent": "OnoChoo/1.0"}, timeout=8)
-        if r.status_code != 200:
+        _, soup = _try_lastfm_url(artist, title)
+        if soup is None:
             return {}
-        soup = BeautifulSoup(r.text, "html.parser")
 
         # ── 장르 태그 ──────────────────────────────────────────────
         tags = []
