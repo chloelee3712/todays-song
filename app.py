@@ -297,9 +297,9 @@ def render_card(song):
         counts = reaction_counts(song["id"])
         mine = user_reacted(song["id"], me)
         cols = st.columns(len(REACTIONS))
-        for i, (kind, emoji, _label) in enumerate(REACTIONS):
+        for i, (kind, emoji, label) in enumerate(REACTIONS):
             pressed = kind in mine
-            if cols[i].button(f"{emoji} {counts.get(kind, 0)}",
+            if cols[i].button(f"{emoji} {label} {counts.get(kind, 0)}",
                               key=f"react_{song['id']}_{kind}",
                               width="stretch",
                               type="primary" if pressed else "secondary"):
