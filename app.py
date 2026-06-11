@@ -15,6 +15,7 @@
 ※ Streamlit Cloud의 파일시스템은 재시작 시 초기화되므로 songs.db도 리셋됨(데모용으로는 충분).
 """
 
+import re
 import urllib.parse
 import sqlite3
 from collections import Counter
@@ -144,24 +145,72 @@ def get_comments(song_id):
 # 메타데이터 수집 (Last.fm 트랙 페이지를 BeautifulSoup으로 파싱)
 # 같은 곡은 캐시해서 재요청 안 함 (= 정제/효율)
 # ======================================================================
+def _normalize(s):
+    """공백 제거·소문자 변환 후 URL 인코딩 — 대소문자·공백 차이를 흡수."""
+    return urllib.parse.quote_plus(re.sub(r"\s+", " ", s.strip()).lower())
+
+
 @st.cache_data(show_spinner=False, ttl=60 * 60 * 24)
-def fetch_lastfm_genre(artist, title):
+def fetch_lastfm_meta(artist, title):
+    """Last.fm 트랙 페이지에서 장르·앨범·청취자 수·재생 수를 스크래핑.
+    반환: dict(genre, album, listeners, playcount) — 못 찾은 항목은 None.
+    """
     try:
-        a = urllib.parse.quote_plus(artist.strip())
-        t = urllib.parse.quote_plus(title.strip())
+        a = _normalize(artist)
+        t = _normalize(title)
         url = f"https://www.last.fm/music/{a}/_/{t}"
         r = requests.get(url, headers={"User-Agent": "OnoChoo/1.0"}, timeout=8)
         if r.status_code != 200:
-            return None
+            return {}
         soup = BeautifulSoup(r.text, "html.parser")
+
+        # ── 장르 태그 ──────────────────────────────────────────────
         tags = []
         for a_tag in soup.select('a[href^="/tag/"]'):
             txt = a_tag.get_text(strip=True)
             if txt and txt.lower() not in [x.lower() for x in tags]:
                 tags.append(txt)
-        return ", ".join(tags[:4]) if tags else None
+        genre = ", ".join(tags[:4]) if tags else None
+
+        # ── 앨범명 ────────────────────────────────────────────────
+        album = None
+        album_tag = soup.select_one('a[href*="/_/"]')   # /music/Artist/_/Track 패턴 외 앨범 링크
+        # 더 정확한 선택자: 트랙 메타 섹션의 앨범
+        meta_items = soup.select(".source-album-name, .header-new-crumb")
+        for item in meta_items:
+            txt = item.get_text(strip=True)
+            if txt:
+                album = txt
+                break
+        if not album:
+            # fallback: "Album" 레이블 옆 텍스트
+            for dt in soup.select("dt"):
+                if "album" in dt.get_text(strip=True).lower():
+                    dd = dt.find_next_sibling("dd")
+                    if dd:
+                        album = dd.get_text(strip=True)
+                        break
+
+        # ── 청취자 수 / 재생 수 ────────────────────────────────────
+        listeners, playcount = None, None
+        for abbr in soup.select("abbr.js-abbreviated-counter"):
+            val = abbr.get("title", "").replace(",", "")
+            label_el = abbr.find_parent()
+            label = label_el.get_text(" ", strip=True).lower() if label_el else ""
+            if "listener" in label and listeners is None:
+                listeners = val
+            elif "scrobble" in label or "play" in label:
+                playcount = val
+
+        return {"genre": genre, "album": album,
+                "listeners": listeners, "playcount": playcount}
     except Exception:
-        return None
+        return {}
+
+
+# 하위 호환 래퍼 (기존 코드가 genre 문자열을 기대하는 곳에서 사용)
+def fetch_lastfm_genre(artist, title):
+    return fetch_lastfm_meta(artist, title).get("genre")
 
 
 # ======================================================================
@@ -281,11 +330,23 @@ def create_view():
         if not (title.strip() and artist.strip() and reason.strip()):
             st.error("곡 제목 · 아티스트 · 추천 이유는 필수야.")
             return
-        with st.spinner("곡 장르 정보를 가져오는 중…"):
-            genre = fetch_lastfm_genre(artist, title)
+        with st.spinner("Last.fm에서 곡 정보를 가져오는 중…"):
+            meta = fetch_lastfm_meta(artist, title)
+        genre = meta.get("genre")
         add_song(me, title.strip(), artist.strip(), reason.strip(), link.strip(), genre)
-        st.session_state.flash = (f"'{title.strip()}' 등록 완료!"
-                                  + (f"  자동 장르: {genre}" if genre else "  (장르는 못 찾았어)"))
+        extras = []
+        if meta.get("album"):
+            extras.append(f"앨범: {meta['album']}")
+        if meta.get("listeners"):
+            extras.append(f"청취자: {int(meta['listeners']):,}명")
+        if meta.get("playcount"):
+            extras.append(f"재생: {int(meta['playcount']):,}회")
+        extra_str = "  · ".join(extras)
+        st.session_state.flash = (
+            f"'{title.strip()}' 등록 완료!"
+            + (f"  장르: {genre}" if genre else "  (장르 정보 없음)")
+            + (f"  |  {extra_str}" if extra_str else "")
+        )
         st.session_state.page = "home"
         st.rerun()
 
