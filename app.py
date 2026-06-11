@@ -46,7 +46,8 @@ def now_kst():
 # ======================================================================
 def get_conn():
     url = st.secrets["DATABASE_URL"]
-    conn = psycopg2.connect(url, cursor_factory=psycopg2.extras.RealDictCursor)
+    conn = psycopg2.connect(url, cursor_factory=psycopg2.extras.RealDictCursor,
+                            sslmode="require")
     return conn
 
 
