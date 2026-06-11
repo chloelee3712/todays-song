@@ -229,7 +229,7 @@ def login_view():
     st.markdown("## 🎧 오늘의 노래 추천")
     st.caption("닉네임만 입력하면 바로 입장 (회원가입 없음)")
     nick = st.text_input("닉네임", max_chars=20, placeholder="예: 은하")
-    if st.button("입장하기", type="primary", use_container_width=True):
+    if st.button("입장하기", type="primary", width="stretch"):
         if nick.strip():
             st.session_state.nickname = nick.strip()
             st.session_state.page = "home"
@@ -242,16 +242,16 @@ def sidebar():
     with st.sidebar:
         st.markdown(f"**{st.session_state.nickname}** 님 👋")
         st.divider()
-        if st.button("🏠 홈 (타임라인)", use_container_width=True):
+        if st.button("🏠 홈 (타임라인)", width="stretch"):
             st.session_state.page = "home"; st.rerun()
-        if st.button("➕ 노래 추천하기", use_container_width=True):
+        if st.button("➕ 노래 추천하기", width="stretch"):
             st.session_state.page = "create"; st.rerun()
-        if st.button("🗂 아카이브", use_container_width=True):
+        if st.button("🗂 아카이브", width="stretch"):
             st.session_state.page = "archive"; st.rerun()
-        if st.button("📊 통계", use_container_width=True):
+        if st.button("📊 통계", width="stretch"):
             st.session_state.page = "stats"; st.rerun()
         st.divider()
-        if st.button("로그아웃", use_container_width=True):
+        if st.button("로그아웃", width="stretch"):
             st.session_state.nickname = None; st.rerun()
 
 
@@ -275,7 +275,7 @@ def render_card(song):
             pressed = kind in mine
             if cols[i].button(f"{emoji} {counts.get(kind, 0)}",
                               key=f"react_{song['id']}_{kind}",
-                              use_container_width=True,
+                              width="stretch",
                               type="primary" if pressed else "secondary"):
                 toggle_reaction(song["id"], me, kind)
                 st.rerun()
@@ -306,7 +306,7 @@ def home_view():
     for s in songs:
         render_card(s)
     st.divider()
-    if st.button("🎵 오늘의 노래 추천하기", type="primary", use_container_width=True):
+    if st.button("🎵 오늘의 노래 추천하기", type="primary", width="stretch"):
         st.session_state.page = "create"; st.rerun()
 
 
