@@ -32,7 +32,7 @@ KST = timezone(timedelta(hours=9))   # Streamlit Cloud는 UTC라 한국 날짜�
 # (내부키, 이모지, 표시이름)
 REACTIONS = [
     ("like", "🩷", "좋아요"),
-    ("empathy", "👍", "공감"),
+    ("jam", "🎸", "합주해요"),
     ("listened", "✨", "들었어요"),
 ]
 
@@ -55,7 +55,8 @@ def init_db():
     conn.execute("""CREATE TABLE IF NOT EXISTS songs(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         nickname TEXT, title TEXT, artist TEXT,
-        reason TEXT, link TEXT, genre TEXT, created_at TEXT)""")
+        reason TEXT, link TEXT, genre TEXT,
+        album TEXT, year TEXT, created_at TEXT)""")
     conn.execute("""CREATE TABLE IF NOT EXISTS reactions(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         song_id INTEGER, nickname TEXT, kind TEXT,
@@ -77,11 +78,11 @@ def user_posted_within_24h(nickname):
     return n > 0
 
 
-def add_song(nickname, title, artist, reason, link, genre):
+def add_song(nickname, title, artist, reason, link, genre, album=None, year=None):
     conn = get_conn()
-    conn.execute("""INSERT INTO songs(nickname,title,artist,reason,link,genre,created_at)
-                    VALUES(?,?,?,?,?,?,?)""",
-                 (nickname, title, artist, reason, link, genre, now_kst().isoformat()))
+    conn.execute("""INSERT INTO songs(nickname,title,artist,reason,link,genre,album,year,created_at)
+                    VALUES(?,?,?,?,?,?,?,?,?)""",
+                 (nickname, title, artist, reason, link, genre, album, year, now_kst().isoformat()))
     conn.commit()
     conn.close()
 
@@ -191,6 +192,24 @@ def fetch_lastfm_meta(artist, title):
                         album = dd.get_text(strip=True)
                         break
 
+        # ── 연도 ──────────────────────────────────────────────────
+        year = None
+        for dt in soup.select("dt"):
+            if dt.get_text(strip=True).lower() in ("released", "release date", "출시"):
+                dd = dt.find_next_sibling("dd")
+                if dd:
+                    m = re.search(r"\b(19|20)\d{2}\b", dd.get_text())
+                    if m:
+                        year = m.group()
+                        break
+        if not year:
+            # 페이지 내 메타 태그에서 연도 추출 시도
+            for meta_tag in soup.select('meta[property="music:release_date"], meta[name="music:release_date"]'):
+                m = re.search(r"\b(19|20)\d{2}\b", meta_tag.get("content", ""))
+                if m:
+                    year = m.group()
+                    break
+
         # ── 청취자 수 / 재생 수 ────────────────────────────────────
         listeners, playcount = None, None
         for abbr in soup.select("abbr.js-abbreviated-counter"):
@@ -202,7 +221,7 @@ def fetch_lastfm_meta(artist, title):
             elif "scrobble" in label or "play" in label:
                 playcount = val
 
-        return {"genre": genre, "album": album,
+        return {"genre": genre, "album": album, "year": year,
                 "listeners": listeners, "playcount": playcount}
     except Exception:
         return {}
@@ -261,8 +280,15 @@ def render_card(song):
     with st.container(border=True):
         st.markdown(f"### {song['title']}")
         st.markdown(f"**{song['artist']}**　·　by {song['nickname']}")
+        meta_parts = []
+        if song["album"]:
+            meta_parts.append(f"💿 {song['album']}")
+        if song["year"]:
+            meta_parts.append(f"📅 {song['year']}")
         if song["genre"]:
-            st.caption(f"🏷 {song['genre']}")
+            meta_parts.append(f"🏷 {song['genre']}")
+        if meta_parts:
+            st.caption("　·　".join(meta_parts))
         st.write(song["reason"])
         if song["link"]:
             st.markdown(f"[▶ 들으러 가기]({song['link']})")
@@ -333,7 +359,9 @@ def create_view():
         with st.spinner("Last.fm에서 곡 정보를 가져오는 중…"):
             meta = fetch_lastfm_meta(artist, title)
         genre = meta.get("genre")
-        add_song(me, title.strip(), artist.strip(), reason.strip(), link.strip(), genre)
+        album = meta.get("album")
+        year  = meta.get("year")
+        add_song(me, title.strip(), artist.strip(), reason.strip(), link.strip(), genre, album, year)
         extras = []
         if meta.get("album"):
             extras.append(f"앨범: {meta['album']}")
@@ -381,14 +409,13 @@ def stats_view():
     c2.metric("참여자", len(users))
     c3.metric("총 반응", total_reactions)
 
-    # Last.fm로 수집·정제한 장르를 집계 → 시각화
+    # 대표 장르(첫 번째 태그)만 사용 → 곡당 1회만 카운트
     counter = Counter()
     for s in songs:
         if s["genre"]:
-            for g in s["genre"].split(","):
-                g = g.strip()
-                if g:
-                    counter[g] += 1
+            primary = s["genre"].split(",")[0].strip()
+            if primary:
+                counter[primary] += 1
 
     if counter:
         data = counter.most_common(10)
